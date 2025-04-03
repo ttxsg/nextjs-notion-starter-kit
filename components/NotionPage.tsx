@@ -1,19 +1,22 @@
-import * as React from 'react'
+import cs from 'classnames'
 import dynamic from 'next/dynamic'
-import Image from 'next/image'
+import Image from 'next/legacy/image'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
-
-import cs from 'classnames'
-import { PageBlock } from 'notion-types'
+import { type PageBlock } from 'notion-types'
 import { formatDate, getBlockTitle, getPageProperty } from 'notion-utils'
+import * as React from 'react'
 import BodyClassName from 'react-body-classname'
-import { NotionRenderer } from 'react-notion-x'
-import TweetEmbed from 'react-tweet-embed'
+import {
+  type NotionComponents,
+  NotionRenderer,
+  useNotionContext
+} from 'react-notion-x'
+import { EmbeddedTweet, TweetNotFound, TweetSkeleton } from 'react-tweet'
 import { useSearchParam } from 'react-use'
 
+import type * as types from '@/lib/types'
 import * as config from '@/lib/config'
-import * as types from '@/lib/types'
 import { mapImageUrl } from '@/lib/map-image-url'
 import { getCanonicalPageUrl, mapPageUrl } from '@/lib/map-page-url'
 import { searchNotion } from '@/lib/search-notion'
@@ -27,7 +30,6 @@ import { Page404 } from './Page404'
 import { PageAside } from './PageAside'
 import { PageHead } from './PageHead'
 import styles from './styles.module.css'
-import { EncryptedBlock } from './EncryptedBlock'
 
 // -----------------------------------------------------------------------------
 // dynamic imports for optional components
@@ -98,8 +100,15 @@ const Modal = dynamic(
   }
 )
 
-const Tweet = ({ id }: { id: string }) => {
-  return <TweetEmbed tweetId={id} />
+function Tweet({ id }: { id: string }) {
+  const { recordMap } = useNotionContext()
+  const tweet = (recordMap as types.ExtendedTweetRecordMap)?.tweets?.[id]
+
+  return (
+    <React.Suspense fallback={<TweetSkeleton />}>
+      {tweet ? <EmbeddedTweet tweet={tweet} /> : <TweetNotFound />}
+    </React.Suspense>
+  )
 }
 
 const propertyLastEditedTimeValue = (
@@ -143,118 +152,20 @@ const propertyTextValue = (
   return defaultFn()
 }
 
-// 统一处理加密内容检测的函数
-function processBlockForEncryption(block, blockType) {
-  if (!block?.properties?.title) return null;
-  
-  try {
-    // 获取文本内容
-    let fullText = '';
-    if (Array.isArray(block.properties.title)) {
-      fullText = block.properties.title
-        .map(segment => (Array.isArray(segment) ? segment[0] : segment))
-        .join('');
-    }
-    
-    // 移除前后空白
-    fullText = fullText.trim();
-    
-    console.log(`检查${blockType}块:`, fullText, block.id);
-    
-    // 使用更宽松的匹配模式
-    // 匹配 {{password:...}}... 格式
-    if (fullText.includes('{{password:')) {
-      const match = fullText.match(/\{\{password:(.*?)\}\}(.*)/);
-      if (match) {
-        const password = match[1].trim();
-        const content = match[2].trim();
-        console.log(`找到password格式: 密码=${password}, 内容=${content}`);
-        return <EncryptedBlock content={content} password={password} />;
-      }
-    }
-    
-    // 匹配 {{encrypted:...}} 格式
-    if (fullText.includes('{{encrypted:')) {
-      const match = fullText.match(/\{\{encrypted:(.*?)\}\}/);
-      if (match) {
-        const content = match[1].trim();
-        console.log(`找到encrypted格式: 内容=${content}`);
-        return <EncryptedBlock content={content} />;
-      }
-    }
-  } catch (e) {
-    console.error(`处理${blockType}块错误:`, e);
-  }
-  
-  return null;
-}
-
-// 代码块特殊处理函数
-function processCodeBlockForEncryption(block) {
-  try {
-    // 检查是否有代码内容
-    if (!block?.properties?.title) return null;
-    
-    // 获取代码内容
-    let codeContent = '';
-    if (Array.isArray(block.properties.title)) {
-      codeContent = block.properties.title
-        .map(segment => (Array.isArray(segment) ? segment[0] : segment))
-        .join('');
-    }
-    
-    // 移除前后空白
-    codeContent = codeContent.trim();
-    
-    console.log(`检查代码块:`, codeContent, block.id);
-    
-    // 检查代码内容是否包含加密标记
-    if (codeContent.includes('{{encrypted:')) {
-      const match = codeContent.match(/\{\{encrypted:(.*?)\}\}/);
-      if (match) {
-        const content = match[1].trim();
-        console.log(`代码块中找到加密内容: ${content}`);
-        return <EncryptedBlock content={content} />;
-      }
-    }
-    
-    if (codeContent.includes('{{password:')) {
-      const match = codeContent.match(/\{\{password:(.*?)\}\}(.*)/);
-      if (match) {
-        const password = match[1].trim();
-        const content = match[2].trim();
-        console.log(`代码块中找到密码保护内容: 密码=${password}, 内容=${content}`);
-        return <EncryptedBlock content={content} password={password} />;
-      }
-    }
-  } catch (e) {
-    console.error('处理代码块错误:', e);
-  }
-  
-  return null;
-}
-
-export const NotionPage: React.FC<types.PageProps> = ({
+export function NotionPage({
   site,
   recordMap,
   error,
   pageId
-}) => {
+}: types.PageProps) {
   const router = useRouter()
   const lite = useSearchParam('lite')
 
-  const components = React.useMemo(
+  const components = React.useMemo<Partial<NotionComponents>>(
     () => ({
-      nextImage: Image,
+      nextLegacyImage: Image,
       nextLink: Link,
-      Code: (props) => {
-        // 先检查是否包含加密内容
-        const encryptedContent = processCodeBlockForEncryption(props.block);
-        if (encryptedContent) return encryptedContent;
-        
-        // 否则使用默认的代码渲染器
-        return <Code {...props} />;
-      },
+      Code,
       Collection,
       Equation,
       Pdf,
@@ -263,50 +174,7 @@ export const NotionPage: React.FC<types.PageProps> = ({
       Header: NotionPageHeader,
       propertyLastEditedTimeValue,
       propertyTextValue,
-      propertyDateValue,
-      
-      // 处理文本块
-      text: ({ block }) => {
-        return processBlockForEncryption(block, 'text');
-      },
-      
-      // 处理引用块
-      quote: ({ block }) => {
-        return processBlockForEncryption(block, 'quote');
-      },
-      
-      // 处理项目符号列表
-      bulleted_list: ({ block }) => {
-        return processBlockForEncryption(block, 'bulleted_list');
-      },
-      
-      // 处理编号列表
-      numbered_list: ({ block }) => {
-        return processBlockForEncryption(block, 'numbered_list');
-      },
-      
-      // 处理标题块
-      header: ({ block }) => {
-        return processBlockForEncryption(block, 'header');
-      },
-      
-      sub_header: ({ block }) => {
-        return processBlockForEncryption(block, 'sub_header');
-      },
-      
-      sub_sub_header: ({ block }) => {
-        return processBlockForEncryption(block, 'sub_sub_header');
-      },
-      
-      // 处理callout块 (带有图标的侧边块)
-      callout: ({ block }) => {
-        return processBlockForEncryption(block, 'callout');
-      },
-      
-      // 处理toggle块
-      toggle: ({ block }) => {
-        return processBlockForEncryption(block, 'toggle');
-      }
+      propertyDateValue
     }),
     []
   )
